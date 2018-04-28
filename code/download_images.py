@@ -27,6 +27,29 @@ from urllib3.util import Retry
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
+def load_dataset(_dataset, _outdir):
+    with open(_dataset, 'r') as f:
+        data_dict = json.load(f)
+
+    imgs = pd.DataFrame(data_dict['images'])
+    imgs.columns = ['id', 'url']
+    imgs['fn'] = _outdir + imgs['id'] + '.jpg'
+
+    if 'annotations' in data_dict:
+        labels = pd.DataFrame(data_dict['annotations'])
+        labels.columns = ['id', 'label']
+        labels['label'] = labels['label'].apply(lambda lst: ' '.join(lst))
+        data_df = imgs.merge(labels, how='inner', on='id')
+    else:
+        data_df = imgs
+    return data_df
+
+
+def format_urls_for_download(_data_df, _max=50000):
+    _fnames_urls = _data_df[['fn', 'url']].values.tolist()
+    return _fnames_urls[:_max]
+
+
 def download_image(fnames_and_urls):
     """
     download image and save its with 90% quality as JPG format
@@ -42,26 +65,6 @@ def download_image(fnames_and_urls):
         image_rgb.save(fname, format='JPEG', quality=90)
 
 
-def parse_dataset(_dataset, _outdir, _max=50000, _sample_size=None):
-    """
-    parse the dataset to create a list of tuple containing absolute path and url of image
-    :param _dataset: dataset to parse
-    :param _outdir: output directory where data will be saved
-    :param _max: maximum images to download (change to download all dataset)
-    :return: list of tuple containing absolute path and url of image
-    """
-    _fnames_urls = []
-    with open(_dataset, 'r') as f:
-        data = json.load(f)
-        for image in data["images"]:
-            url = image["url"]
-            fname = os.path.join(outdir, "{}.jpg".format(image["imageId"]))
-            _fnames_urls.append((fname, url))
-    if _sample_size is not None and _sample_size > 0 and _sample_size <= _max and _sample_size <= len(_fnames_urls):
-        _fnames_urls = pd.DataFrame(_fnames_urls).sample(_sample_size).values.tolist()
-    return _fnames_urls[:_max]
-
-
 if __name__ == '__main__':   
     
     if len(sys.argv) < 3:
@@ -71,6 +74,9 @@ if __name__ == '__main__':
     # get args and create output directory
     dataset = sys.argv[1]
     outdir = sys.argv[2]
+    if not outdir.endswith('/'):
+        outdir += '/'
+    
     try:
         sample_size = int(sys.argv[3])
     except IndexError:
@@ -79,8 +85,19 @@ if __name__ == '__main__':
     if not os.path.exists(outdir):
         os.makedirs(outdir)
 
-    # parse json dataset file
-    fnames_urls = parse_dataset(dataset, outdir, _sample_size=sample_size)
+    # load dataset as dataframe
+    df = load_dataset(dataset, outdir)
+    
+    # sample the dataset if desired
+    if sample_size is not None:
+        df = df.sample(sample_size)
+    
+    # store labels for imgs we are about to download if in train / validation
+    if 'label' in df.columns:
+        df[['id', 'label']].to_csv(f'{outdir[:-1]}_labels.csv', index=False)
+    
+    # format id and urls for threading image downloads
+    fnames_urls = format_urls_for_download(df, _max=50000)
     
     # download data
     pool = multiprocessing.Pool(processes=12)
